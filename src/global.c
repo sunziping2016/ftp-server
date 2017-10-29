@@ -83,7 +83,7 @@ int global_start(int argc, char *const argv[])
                 global.loglevel = LOGLEVEL_ERROR;
                 break;
             case 'h':
-                printf(help_str);
+                puts(help_str);
                 exit(EXIT_SUCCESS);
             case 'V':
                 printf("%s\n", version_str);

@@ -5,13 +5,114 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include <ctype.h>
 #include "global.h"
 
-int ftp_client_command(ftp_client_t *client, char *command, size_t len)
+typedef int (*ftp_client_command_callback_t)(ftp_client_t *client, char *arg);
+
+typedef struct ftp_client_command_t {
+    char *command;
+    size_t command_len;
+    ftp_client_command_callback_t callback;
+} ftp_client_command_t;
+
+static int ftp_client_handle_user(ftp_client_t *client, char *arg)
 {
-    printf("%s %lu\n", command, strlen(command));
-    ftp_client_write(client, "%s\r\n", command);
-    return 0;
+    int ret = -1;
+    if (client->logged_in)
+        ftp_client_write(client, "530 Can't change to another user.\r\n");
+    else if (!*arg)
+        ftp_client_write(client, "500 Requires username.\r\n");
+    else {
+        if (client->user)
+            free(client->user);
+        client->user = malloc(strlen(arg) + 1);
+        if (!client->user)
+            ftp_client_write(client, "451 Server temporary unavailable.\r\n");
+        else {
+            strcpy(client->user, arg);
+            ftp_client_write(client, "331 Please specify the password.\r\n");
+        }
+    }
+    return ret;
+}
+
+static int ftp_client_handle_pass(ftp_client_t *client, char *arg)
+{
+    int ret = -1;
+    if (client->logged_in)
+        ftp_client_write(client, "230 Already logged in.\r\n");
+    else if (!client->user)
+        ftp_client_write(client, "503 Login with USER first.\r\n");
+    else {
+        ftp_user_data_t *data;
+        if ((ret = ftp_users_check(client->user, arg, &data)) == -1)
+            ftp_client_write(client, "451 Server temporary unavailable.\r\n");
+        else if (ret == 1) {
+            ftp_client_write(client, "530 Login incorrect.\r\n");
+            free(client->user);
+            client->user = NULL;
+            ret = -1;
+        } else {
+            ftp_client_write(client, "230 Login successful.\r\n");
+            client->logged_in = 1;
+        }
+    }
+    return ret;
+}
+
+// Trie tree?
+ftp_client_command_t *ftp_client_lookup_command(ftp_client_command_t *commands, size_t len, const char *input)
+{
+    size_t begin = 0, middle;
+    int ret;
+    ftp_client_command_t *command;
+    while (begin < len) {
+        middle = begin + (len - begin) / 2;
+        command = commands + middle;
+        ret = strncasecmp(command->command, input, command->command_len);
+        if (ret == 0) {
+            if (input[command->command_len] == '\0' || input[command->command_len] == ' ')
+                return command;
+            begin = middle + 1;
+        } else if (ret < 0)
+            begin = middle + 1;
+        else
+            len = middle;
+    }
+    return NULL;
+}
+
+ftp_client_command_t before_login[] = {
+        {"PASS", 4, ftp_client_handle_pass},
+        {"USER", 4, ftp_client_handle_user}
+}, after_login[] = {
+        {"PASS", 4, ftp_client_handle_pass},
+        {"PASV", 4, NULL},
+        {"PORT", 4, NULL},
+        {"USER", 4, ftp_client_handle_user}
+};
+
+int ftp_client_command(ftp_client_t *client, char *input)
+{
+    if (!*input)
+        return 0;
+    ftp_client_command_t *command;
+    if (!client->logged_in)
+        command = ftp_client_lookup_command(before_login, sizeof(before_login) / sizeof(before_login[0]), input);
+    else
+        command = ftp_client_lookup_command(after_login, sizeof(after_login) / sizeof(after_login[0]), input);
+    if (command) {
+        if (command->callback)
+            return (*command->callback)(client, input[command->command_len] == ' ' ?
+                                                input + command->command_len + 1 : input + command->command_len);
+        else
+            ftp_client_write(client, "502 Command not implemented.\r\n");
+    } else if (client->logged_in)
+        ftp_client_write(client, "500 Unknown command.\r\n");
+    else
+        ftp_client_write(client, "530 Please login with USER and PASS.\r\n");
+    return -1;
 }
 
 int ftp_client_write(ftp_client_t *client, const char *format, ...)
@@ -80,7 +181,7 @@ static int ftp_client_update(ftp_client_t *client)
                     if (client->recv_buffer[i] == '\n') {
                         size_t len = i != 0 && client->recv_buffer[i - 1] == '\r' ? i - 1 : i;
                         client->recv_buffer[len] = '\0';
-                        ftp_client_command(client, client->recv_buffer, len);
+                        ftp_client_command(client, client->recv_buffer);
                         ++i;
                         if (client->recv_buffer_size != i)
                             memmove(client->recv_buffer, client->recv_buffer + i, client->recv_buffer_size - i);
@@ -122,6 +223,7 @@ int ftp_client_add(int fd, struct sockaddr *addr, socklen_t len)
         close(fd);
         return -1;
     }
+    memset(client, 0, sizeof(ftp_client_t));
     struct epoll_event event;
     event.events = EPOLLIN | EPOLLOUT | EPOLLET;
     event.data.ptr = &client->event_data;
@@ -133,12 +235,9 @@ int ftp_client_add(int fd, struct sockaddr *addr, socklen_t len)
         return -1;
     }
     if (getnameinfo(addr, len, client->host, NI_MAXHOST,
-                    client->port, NI_MAXSERV, NI_NUMERICHOST | NI_NUMERICSERV) == -1) {
-        if (global.loglevel >= LOGLEVEL_WARN)
-            fprintf(stderr, "W: getnameinfo(client#%d): %s\n", fd, strerror(errno));
-        client->host[0] = '\0';
-        client->port[0] = '\0';
-    }
+                    client->port, NI_MAXSERV, NI_NUMERICHOST | NI_NUMERICSERV) == -1 &&
+            global.loglevel >= LOGLEVEL_WARN)
+        fprintf(stderr, "W: getnameinfo(client#%d): %s\n", fd, strerror(errno));
     if (global.loglevel >= LOGLEVEL_INFO)
         printf("I: accepted client on descriptor %d (host=%s, port=%s)\n",
                fd, client->host, client->port);
@@ -146,11 +245,6 @@ int ftp_client_add(int fd, struct sockaddr *addr, socklen_t len)
     client->event_data.arg = client;
 
     client->fd = fd;
-    client->busy = 0;
-    client->exit_on_sent = 0;
-    client->recv_buffer_size = 0;
-    client->send_buffer_head = 0;
-    client->send_buffer_tail = 0;
 
     client->prev = global.clients.prev;
     global.clients.prev->next = client;
@@ -181,6 +275,8 @@ int ftp_client_close(ftp_client_t *client)
         global_remove_fd(client->fd);
         client->fd = -1;
         free_later(client);
+        free_later(client->user);
+        free_later(client->root);
         --global.epoll_size;
     }
     return ret;

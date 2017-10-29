@@ -4,11 +4,8 @@
 #include <netdb.h>
 #include "reactor.h"
 
-// TODO: DEBUG
 #define CLIENT_RECV_BUFFER_SIZE 4096
 #define CLIENT_SEND_BUFFER_SIZE 4096
-
-#define FTP_COMMAND_MAX_LEN 4
 
 typedef struct ftp_client_t {
     epoll_item_t event_data;
@@ -16,12 +13,14 @@ typedef struct ftp_client_t {
     int fd;
     uint32_t events;
 
-    int busy;
+    int busy, logged_in;
     int exit_on_sent;
 
+    char *user, *root;
     char host[NI_MAXHOST], port[NI_MAXSERV];
     char recv_buffer[CLIENT_RECV_BUFFER_SIZE];
     char send_buffer[CLIENT_SEND_BUFFER_SIZE];
+    char wd[PATH_MAX];
 
     size_t recv_buffer_size;
     size_t send_buffer_head, send_buffer_tail;
@@ -37,6 +36,6 @@ int ftp_client_close_all();
 int ftp_client_list();
 
 int ftp_client_write(ftp_client_t *client, const char *format, ...);
-int ftp_client_command(ftp_client_t *client, char *command, size_t len);
+int ftp_client_command(ftp_client_t *client, char *input);
 
 #endif
