@@ -14,4 +14,3 @@ int main(int argc, char *const argv[])
     global_close();
     return EXIT_SUCCESS;
 }
-

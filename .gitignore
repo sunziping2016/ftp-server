@@ -1,3 +1,4 @@
 .build-debug/
 .build-release/
 .idea
+ftp-server

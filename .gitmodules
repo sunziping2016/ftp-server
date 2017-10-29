@@ -1,0 +1,6 @@
+[submodule "thirdparty/hash_table"]
+	path = thirdparty/hash_table
+	url = git@github.com:anholt/hash_table.git
+[submodule "thirdparty/bcrypt"]
+	path = thirdparty/bcrypt
+	url = git@github.com:rg3/bcrypt.git

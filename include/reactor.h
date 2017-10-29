@@ -3,11 +3,11 @@
 
 #include <stdint.h>
 
-typedef int (*reactor_callback_t)(uint32_t event, void *arg);
+typedef int (*epoll_callback_t)(uint32_t event, void *arg);
 
 typedef struct {
-    reactor_callback_t callback; /**< pointer to callback function. */
-    void *arg;                   /**< extra argument for callback */
+    epoll_callback_t callback; /**< pointer to callback function. */
+    void *arg;                 /**< extra argument for callback */
 } epoll_item_t;
 
 #endif

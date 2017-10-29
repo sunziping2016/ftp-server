@@ -1,6 +1,4 @@
-#include "ftp_server.h"
-#include "global.h"
-
+#define _GNU_SOURCE
 #include <unistd.h>
 #include <stdio.h>
 #include <assert.h>
@@ -8,18 +6,30 @@
 #include <malloc.h>
 #include <sys/epoll.h>
 #include <string.h>
-#include <sys/stat.h>
+
+#include "ftp_server.h"
+#include "global.h"
 
 static int ftp_server_callback(uint32_t events, void *arg)
 {
     ftp_server_t *session = arg;
-    if (events & EPOLLERR || events & EPOLLHUP)
-        ftp_server_close(session);
-    else if (events & EPOLLIN) {
-        for (;;) {
-            // TODO: add accept client
+    if (events & EPOLLIN) {
+        struct sockaddr addr;
+        socklen_t len;
+        int fd;
+        while (session->fd != -1) {
+            len = sizeof(addr);
+            fd = accept4(session->fd, &addr, &len, SOCK_NONBLOCK);
+            if (fd == -1) {
+                if (errno != EAGAIN && errno != EWOULDBLOCK && global.loglevel >= LOGLEVEL_ERROR)
+                    fprintf(stderr, "E: accept(server#%d): %s\n", session->fd, strerror(errno));
+                break;
+            }
+            ftp_client_add(fd, &addr, len);
         }
     }
+    if (events & EPOLLERR || events & EPOLLHUP)
+        ftp_server_close(session);
     return 0;
 }
 
@@ -27,92 +37,95 @@ void ftp_server_init()
 {
     ftp_server_t *head = &global.servers;
     head->fd = -1;
-    head->clients_num = 0;
-    head->clients.prev = head->clients.next = &head->clients;
     head->prev = head->next = head;
 }
 
-int ftp_server_create(const char *host, const char *port,
-                      int family, const char *root)
+int ftp_server_create(const char *host, const char *port, int family)
 {
-    // TODO: check dir
     struct addrinfo hints = {0};
-    struct stat statbuf;
+    /*struct stat statbuf;
     if (stat(root, &statbuf) == -1) {
-        perror("E: stat");
+        if (global.loglevel >= LOGLEVEL_ERROR)
+            fprintf(stderr, "E: stat(\"%s\"): %s\n", root, strerror(errno));
         return EAI_SYSTEM;
     }
     if (!S_ISDIR(statbuf.st_mode)) {
-        fprintf(stderr, "E: requires directory\n");
+        if (global.loglevel >= LOGLEVEL_ERROR)
+            fprintf(stderr, "E: requires directory\n");
         return EAI_SYSTEM;
-    }
+    }*/
     hints.ai_family = family;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE;
     struct addrinfo *result, *temp;
     int ret = getaddrinfo(host, port, &hints, &result), yes = 1;
     if (ret != 0) {
-        fprintf(stderr, "E: getaddrinfo: %s\n", gai_strerror(ret));
+        if (global.loglevel >= LOGLEVEL_ERROR)
+            fprintf(stderr, "E: getaddrinfo: %s\n", gai_strerror(ret));
         return ret;
     }
     assert(result);
     ret = EAI_SYSTEM;
-    struct epoll_event event;
-    event.events = EPOLLIN | EPOLLET;
     temp = result;
     while (temp) {
         ftp_server_t *server = malloc(sizeof(ftp_server_t));
         if (server == NULL) {
-            perror("E: malloc");
+            if (global.loglevel >= LOGLEVEL_ERROR)
+                perror("E: malloc(server)");
         } else if ((server->fd = socket(temp->ai_family, temp->ai_socktype | SOCK_NONBLOCK,
                                       temp->ai_protocol)) == -1) {
-            perror("E: socket");
+            if (global.loglevel >= LOGLEVEL_ERROR)
+                perror("E: socket(server)");
             free(server);
         } else {
-            event.data.ptr = &server->event_data;
             if (temp->ai_family == AF_INET6 &&
                     setsockopt(server->fd, IPPROTO_IPV6, IPV6_V6ONLY, &yes, sizeof(yes)) == -1) {
-                perror("E: setsockopt");
-                if (global.loglevel >= LOGLEVEL_WARN)
-                    fprintf(stderr, "W: maybe using ipv4 mapped ipv6 address");
+                if (global.loglevel >= LOGLEVEL_ERROR)
+                    fprintf(stderr, "E: setsockopt(server#%d): %s\n", server->fd, strerror(errno));
             }
             if (bind(server->fd, temp->ai_addr, temp->ai_addrlen) == -1) {
-                perror("E: bind");
+                if (global.loglevel >= LOGLEVEL_ERROR)
+                    fprintf(stderr, "E: bind(server#%d): %s\n", server->fd, strerror(errno));
                 close(server->fd);
                 free(server);
             } else if (listen(server->fd, SOMAXCONN) == -1) {
-                perror("E: listen");
-                close(server->fd);
-                free(server);
-            } else if (epoll_ctl(global.epfd, EPOLL_CTL_ADD, server->fd, &event) == -1) {
-                perror("E: epoll_ctl");
+                if (global.loglevel >= LOGLEVEL_ERROR)
+                    fprintf(stderr, "E: listen(server#%d): %s\n", server->fd, strerror(errno));
                 close(server->fd);
                 free(server);
             } else {
-                if (getnameinfo(temp->ai_addr, temp->ai_addrlen, server->host, NI_MAXHOST,
-                                server->port, NI_MAXSERV, NI_NUMERICHOST | NI_NUMERICSERV) == -1) {
-                    if (global.loglevel >= LOGLEVEL_WARN)
-                        fprintf(stderr, "W: getnameinfo %s", strerror(errno));
-                    server->host[0] = '\0';
-                    server->port[0] = '\0';
+                struct epoll_event event;
+                event.events = EPOLLIN | EPOLLET;
+                event.data.ptr = &server->event_data;
+                if (epoll_ctl(global.epfd, EPOLL_CTL_ADD, server->fd, &event) == -1) {
+                    if (global.loglevel >= LOGLEVEL_ERROR)
+                        fprintf(stderr, "E: epoll_ctl(add: server#%d): %s\n", server->fd, strerror(errno));
+                    close(server->fd);
+                    free(server);
+                } else {
+                    if (getnameinfo(temp->ai_addr, temp->ai_addrlen, server->host, NI_MAXHOST,
+                                    server->port, NI_MAXSERV, NI_NUMERICHOST | NI_NUMERICSERV) == -1) {
+                        if (global.loglevel >= LOGLEVEL_WARN)
+                            fprintf(stderr, "W: getnameinfo(server#%d): %s\n", server->fd, strerror(errno));
+                        server->host[0] = '\0';
+                        server->port[0] = '\0';
+                    }
+                    if (global.loglevel >= LOGLEVEL_INFO)
+                        printf("I: started server on descriptor %d (host=%s, port=%s)\n",
+                               server->fd, server->host, server->port);
+                    server->event_data.callback = ftp_server_callback;
+                    server->event_data.arg = server;
+                    server->family = temp->ai_family;
+
+                    server->prev = global.servers.prev;
+                    global.servers.prev->next = server;
+                    global.servers.prev = server;
+                    server->next = &global.servers;
+
+                    global_add_fd(server->fd, FD_FTP_SERVER, server);
+                    ++global.epoll_size;
+                    ret = 0;
                 }
-                if (global.loglevel >= LOGLEVEL_INFO)
-                    printf("I: started server on descriptor %d (host=%s, port=%s)\n",
-                        server->fd, server->host, server->port);
-                ++global.epoll_size;
-                server->event_data.callback = ftp_server_callback;
-                server->event_data.arg = server;
-                server->family = temp->ai_family;
-                strncpy(server->root, root, PATH_MAX);
-
-                server->prev = global.servers.prev;
-                global.servers.prev->next = server;
-                global.servers.prev = server;
-                server->next = &global.servers;
-
-                server->clients_num = 0;
-                server->clients.next = server->clients.prev = &server->clients;
-                ret = 0;
             }
         }
         temp = temp->ai_next;
@@ -124,27 +137,22 @@ int ftp_server_create(const char *host, const char *port,
 int ftp_server_close(ftp_server_t *server)
 {
     int ret = 0;
-    ftp_server_t *head = &global.servers;
-    server->prev->next = server->next;
-    server->next->prev = server->prev;
-    if (server->clients_num) {
-        ftp_client_t *head_client = &head->clients, *server_client = &server->clients;
-        server_client->next->prev = head_client->prev;
-        head_client->prev->next = server_client->next;
-        head_client->prev = server_client->prev;
-        server_client->prev->next = head_client;
-        head->clients_num += server->clients_num;
+    if (server->fd != -1) {
+        server->prev->next = server->next;
+        server->next->prev = server->prev;
+        if (close(server->fd) == -1) {
+            if (global.loglevel >= LOGLEVEL_ERROR)
+                fprintf(stderr, "E: close(server#%d): %s\n", server->fd, strerror(errno));
+            ret = -1;
+        }
+        if (global.loglevel >= LOGLEVEL_INFO)
+            printf("I: closed server on descriptor %d (host=%s, port=%s)\n",
+                   server->fd, server->host, server->port);
+        global_remove_fd(server->fd);
+        server->fd = -1;
+        free_later(server);
+        --global.epoll_size;
     }
-    int fd = server->fd;
-    if (close(fd) == -1) {
-        perror("E: close");
-        ret = -1;
-    }
-    if (global.loglevel >= LOGLEVEL_INFO)
-        printf("I: closed server on descriptor %d (host=%s, port=%s)\n",
-               server->fd, server->host, server->port);
-    --global.epoll_size;
-    free(server);
     return ret;
 }
 
@@ -158,4 +166,16 @@ int ftp_server_close_all()
     return ret;
 }
 
-
+int ftp_server_list()
+{
+    ftp_server_t *temp = global.servers.next;
+    if (temp == &global.servers) {
+        printf("No running ftp server\n");
+    } else {
+        do {
+            printf("fd: %d\thost: %s\tport: %s\n", temp->fd, temp->host, temp->port);
+            temp = temp->next;
+        } while (temp != &global.servers);
+    }
+    return 0;
+}

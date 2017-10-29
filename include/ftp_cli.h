@@ -3,13 +3,19 @@
 
 #include "reactor.h"
 
-typedef struct global_t global_t;
-
 typedef struct ftp_cli_t {
     epoll_item_t epoll_item;
     int fd;
     int done;
 } ftp_cli_t;
+
+typedef int (*ftp_cli_command_callback_t)(char *arg);
+
+typedef struct ftp_cli_command_t {
+    char *name;
+    ftp_cli_command_callback_t func;
+    char *doc;
+} ftp_cli_command_t;
 
 void ftp_cli_init();
 int ftp_cli_start();
