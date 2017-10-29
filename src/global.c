@@ -5,7 +5,6 @@
 #include <sys/epoll.h>
 #include <reactor.h>
 #include <unistd.h>
-#include <malloc.h>
 #include "global.h"
 
 global_t global;
@@ -197,7 +196,7 @@ int global_add_fd(int fd, enum fd_type_t fd_type, void *pointer)
         size_t new_capacity = global.fd_vector_capacity == 0 ? FD_VECTOR_INIT_SIZE : global.fd_vector_capacity;
         if ((size_t) fd >= new_capacity)
             new_capacity = (size_t) (fd + 1);
-        global.fd_vector = reallocarray(global.fd_vector, sizeof(fd_vector_t), new_capacity);
+        global.fd_vector = realloc(global.fd_vector, sizeof(fd_vector_t) * new_capacity);
         if (!global.fd_vector) {
             if (global.loglevel >= LOGLEVEL_ERROR)
                 perror("E: reallocarray(fd_vector)");
