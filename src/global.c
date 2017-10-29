@@ -1,11 +1,11 @@
 #include <stdlib.h>
 #include <getopt.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/epoll.h>
 #include <reactor.h>
 #include <unistd.h>
 #include <malloc.h>
-#include <tkPort.h>
 #include "global.h"
 
 global_t global;
