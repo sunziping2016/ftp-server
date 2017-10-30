@@ -37,6 +37,7 @@ void global_init()
     global.fd_vector_capacity = 0;
 
     signal_handler_init();
+    ftp_timer_init();
     ftp_server_init();
     ftp_client_init();
     ftp_cli_init();
@@ -160,6 +161,8 @@ int global_close()
             ret = -1;
         if (ftp_client_close_all() == -1)
             ret = -1;
+        if (ftp_timer_close_all() == -1)
+            ret = -1;
         if (close(global.epfd) == -1) {
             if (global.loglevel >= LOGLEVEL_ERROR)
                 perror("E: close(fd: epoll)");
@@ -224,7 +227,8 @@ static const char *fd_type_str[] = {
         "signal",
         "epoll",
         "ftp server",
-        "ftp client"
+        "ftp client",
+        "timer"
 };
 
 int global_list_fd()

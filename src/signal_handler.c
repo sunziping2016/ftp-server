@@ -14,7 +14,7 @@ static int signal_handler_callback(uint32_t events, void *arg)
         struct signalfd_siginfo siginfo;
         while (global.signal_handler.fd != -1) {
             if (read(global.signal_handler.fd, &siginfo, sizeof(siginfo)) == -1) {
-                if (errno != EAGAIN && errno != EWOULDBLOCK && global.loglevel >= LOGLEVEL_ERROR)
+                if (errno != EAGAIN && global.loglevel >= LOGLEVEL_ERROR)
                     perror("E: read(fd: signal)");
                 break;
             }

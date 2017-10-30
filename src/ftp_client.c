@@ -5,7 +5,6 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdarg.h>
-#include <ctype.h>
 #include "global.h"
 
 typedef int (*ftp_client_command_callback_t)(ftp_client_t *client, char *arg);
@@ -37,6 +36,16 @@ static int ftp_client_handle_user(ftp_client_t *client, char *arg)
     return ret;
 }
 
+static int ftp_client_wrong_pass(ftp_timer_t *timer, void *arg)
+{
+    (void) timer;
+    ftp_client_t *client = arg;
+    ftp_client_write(client, "530 Login incorrect.\r\n");
+    client->busy = 0;
+    ftp_client_update(client);
+    return 0;
+}
+
 static int ftp_client_handle_pass(ftp_client_t *client, char *arg)
 {
     int ret = -1;
@@ -49,9 +58,14 @@ static int ftp_client_handle_pass(ftp_client_t *client, char *arg)
         if ((ret = ftp_users_check(client->user, arg, &data)) == -1)
             ftp_client_write(client, "451 Server temporary unavailable.\r\n");
         else if (ret == 1) {
-            ftp_client_write(client, "530 Login incorrect.\r\n");
             free(client->user);
             client->user = NULL;
+            struct itimerspec timer = {0};
+            timer.it_value.tv_sec = 3;
+            if (ftp_timer_add(&timer, ftp_client_wrong_pass, client, 1) != -1)
+                client->busy = 1;
+            else
+                ftp_client_write(client, "530 Login incorrect.\r\n");
             ret = -1;
         } else {
             ftp_client_write(client, "230 Login successful.\r\n");
@@ -139,7 +153,7 @@ int ftp_client_write(ftp_client_t *client, const char *format, ...)
     return ret;
 }
 
-static int ftp_client_update(ftp_client_t *client)
+int ftp_client_update(ftp_client_t *client)
 {
     ssize_t ret;
     while (client->fd != -1) {
@@ -178,13 +192,12 @@ static int ftp_client_update(ftp_client_t *client)
                     client->exit_on_sent = 1;
                 } else {
                     for (; i < client->recv_buffer_size && client->recv_buffer[i] != '\n'; ++i);
-                    if (client->recv_buffer[i] == '\n') {
+                    if (client->recv_buffer_size != i && client->recv_buffer[i] == '\n') {
                         size_t len = i != 0 && client->recv_buffer[i - 1] == '\r' ? i - 1 : i;
                         client->recv_buffer[len] = '\0';
                         ftp_client_command(client, client->recv_buffer);
                         ++i;
-                        if (client->recv_buffer_size != i)
-                            memmove(client->recv_buffer, client->recv_buffer + i, client->recv_buffer_size - i);
+                        memmove(client->recv_buffer, client->recv_buffer + i, client->recv_buffer_size - i);
                         client->recv_buffer_size -= i;
                     }
                 }
@@ -219,7 +232,8 @@ int ftp_client_add(int fd, struct sockaddr *addr, socklen_t len)
 {
     ftp_client_t *client = malloc(sizeof(ftp_client_t));
     if (client == NULL) {
-        perror("E: malloc(client)");
+        if (global.loglevel >= LOGLEVEL_ERROR)
+            perror("E: malloc(client)");
         close(fd);
         return -1;
     }
