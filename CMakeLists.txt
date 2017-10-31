@@ -12,7 +12,8 @@ set(SOURCE_FILES src/main.c include/reactor.h
         include/ftp_client.h src/ftp_client.c
         include/ftp_cli.h src/ftp_cli.c
         include/signal_handler.h src/signal_handler.c
-        include/ftp_users.h src/ftp_users.c)
+        include/ftp_users.h src/ftp_users.c
+        include/ftp_timer.h src/ftp_timer.c)
 
 add_custom_command(OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/bcrypt/bcrypt.a
         COMMAND make bcrypt.a

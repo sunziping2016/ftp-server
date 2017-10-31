@@ -43,17 +43,6 @@ void ftp_server_init()
 int ftp_server_create(const char *host, const char *port, int family)
 {
     struct addrinfo hints = {0};
-    /*struct stat statbuf;
-    if (stat(root, &statbuf) == -1) {
-        if (global.loglevel >= LOGLEVEL_ERROR)
-            fprintf(stderr, "E: stat(\"%s\"): %s\n", root, strerror(errno));
-        return EAI_SYSTEM;
-    }
-    if (!S_ISDIR(statbuf.st_mode)) {
-        if (global.loglevel >= LOGLEVEL_ERROR)
-            fprintf(stderr, "E: requires directory\n");
-        return EAI_SYSTEM;
-    }*/
     hints.ai_family = family;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE;
@@ -115,7 +104,8 @@ int ftp_server_create(const char *host, const char *port, int family)
                                server->fd, server->host, server->port);
                     server->event_data.callback = ftp_server_callback;
                     server->event_data.arg = server;
-                    server->family = temp->ai_family;
+                    server->addr = *temp->ai_addr;
+                    server->addrlen = temp->ai_addrlen;
 
                     server->prev = global.servers.prev;
                     global.servers.prev->next = server;

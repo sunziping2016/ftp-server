@@ -10,7 +10,9 @@
 typedef struct ftp_server_t {
     epoll_item_t event_data;
     int fd;
-    int family;
+
+    struct sockaddr addr;
+    socklen_t addrlen;
     char host[NI_MAXHOST];
     char port[NI_MAXSERV];
     struct ftp_server_t *prev, *next;

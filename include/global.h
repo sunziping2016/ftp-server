@@ -6,6 +6,7 @@
 #include "ftp_server.h"
 #include "ftp_client.h"
 #include "ftp_users.h"
+#include "ftp_timer.h"
 
 #define MAX_EPOLL_EVENTS 64
 #define FD_VECTOR_INIT_SIZE 1024
@@ -30,7 +31,8 @@ enum fd_type_t {
     FD_SIGNAL,
     FD_EPOLL,
     FD_FTP_SERVER,
-    FD_FTP_CLIENT
+    FD_FTP_CLIENT,
+    FD_TIMER
 };
 
 typedef struct fd_vector_t {
@@ -51,6 +53,7 @@ typedef struct global_t {
     ftp_server_t servers;
     ftp_client_t clients;
     ftp_users_t users;
+    ftp_timer_t timers;
 
     pending_free_t *pending_free;
 } global_t;
