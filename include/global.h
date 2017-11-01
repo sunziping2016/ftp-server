@@ -1,6 +1,7 @@
 #ifndef FTP_SERVER_GLOBAL_H
 #define FTP_SERVER_GLOBAL_H
 
+#include "helper.h"
 #include "ftp_cli.h"
 #include "signal_handler.h"
 #include "ftp_server.h"
@@ -32,7 +33,13 @@ enum fd_type_t {
     FD_EPOLL,
     FD_FTP_SERVER,
     FD_FTP_CLIENT,
-    FD_TIMER
+    FD_TIMER,
+    FD_FTP_PASV_SERVER,
+    FD_FTP_PASV_CLIENT,
+    FD_PIPE_READ,
+    FD_PIPE_WRITE,
+    FD_FTP_PORT_CLIENT
+
 };
 
 typedef struct fd_vector_t {

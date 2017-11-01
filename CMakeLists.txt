@@ -6,7 +6,8 @@ set(CMAKE_C_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
 
 include_directories(include)
 
-set(SOURCE_FILES src/main.c include/reactor.h
+set(SOURCE_FILES src/main.c
+        include/helper.h src/helper.c
         include/global.h src/global.c
         include/ftp_server.h src/ftp_server.c
         include/ftp_client.h src/ftp_client.c
@@ -26,9 +27,9 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/hash_table/hash
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/hash_table)
 add_custom_target(hash_table.o DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/hash_table/hash_table.o)
 
-add_executable(ftp-server ${SOURCE_FILES})
-add_dependencies(ftp-server bcrypt.a hash_table.o)
-target_link_libraries(ftp-server readline
+add_executable(server ${SOURCE_FILES})
+add_dependencies(server bcrypt.a hash_table.o)
+target_link_libraries(server readline
         ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/bcrypt/bcrypt.a
         ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/hash_table/hash_table.o)
 

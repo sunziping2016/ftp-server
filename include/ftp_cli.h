@@ -1,7 +1,7 @@
 #ifndef FTP_SERVER_FTP_CLI_H
 #define FTP_SERVER_FTP_CLI_H
 
-#include "reactor.h"
+#include "helper.h"
 
 typedef struct ftp_cli_t {
     epoll_item_t epoll_item;

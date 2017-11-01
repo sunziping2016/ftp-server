@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/epoll.h>
-#include <reactor.h>
+#include <helper.h>
 #include <unistd.h>
 #include "global.h"
 
@@ -228,7 +228,12 @@ static const char *fd_type_str[] = {
         "epoll",
         "ftp server",
         "ftp client",
-        "timer"
+        "timer",
+        "ftp PASV server",
+        "ftp PASV client",
+        "pipe read",
+        "pipe write",
+        "ftp PORT client"
 };
 
 int global_list_fd()

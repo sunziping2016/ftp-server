@@ -2,30 +2,58 @@
 #define FTP_SERVER_FTP_CLIENT_H
 
 #include <netdb.h>
-#include "reactor.h"
+#include "helper.h"
 
 #define CLIENT_RECV_BUFFER_SIZE 4096
 #define CLIENT_SEND_BUFFER_SIZE 4096
+
+#define CLIENT_CHUNK_SIZE 10
+#define CLIENT_MAX_CHUNK_NUM 2
+#define CLIENT_MAX_CHUNK_POOL_NUM (1024 * 512)
+
+enum ftp_client_data_command_t {
+    DC_RETR,
+    DC_STOR,
+    DC_LIST
+};
+
+typedef struct ftp_client_truck_t {
+    char chunk[CLIENT_CHUNK_SIZE];
+    struct ftp_client_truck_t *next;
+} ftp_client_truck_t;
 
 typedef struct ftp_client_t {
     epoll_item_t control_event_data;
     int fd;
     uint32_t control_events;
 
-    epoll_item_t data_event_data;
-    int data_fd;
+    epoll_item_t data_read_event_data;
+    epoll_item_t data_write_event_data;
+    int data_read_fd, data_write_fd;
     uint32_t data_events;
 
-    int busy, logged_in;
-    int exit_on_sent;
+    epoll_item_t pasv_event_data;
+    int local_fd, remote_fd, pasv_fd;
+    struct sockaddr port_addr;
+    socklen_t port_addrlen;
+
+    enum ftp_client_data_command_t data_command;
+    ftp_client_truck_t *head, *tail;
+    size_t head_pos, tail_pos, chunk_num;
 
     char *user, *root;
+    int processing, busy, logged_in;
+    int exit_on_sent;
+    char wd[PATH_MAX];
+
     struct sockaddr local_addr, peer_addr;
     socklen_t local_addrlen, peer_addrlen;
-    char peer_host[NI_MAXHOST], peer_port[NI_MAXSERV];
+    char local_host[ADDRSTRLEN];
+    char peer_host[ADDRSTRLEN];
+    uint16_t local_port, peer_port;
+
     char recv_buffer[CLIENT_RECV_BUFFER_SIZE];
     char send_buffer[CLIENT_SEND_BUFFER_SIZE];
-    char wd[PATH_MAX];
 
     size_t recv_buffer_size;
     size_t send_buffer_head, send_buffer_tail;

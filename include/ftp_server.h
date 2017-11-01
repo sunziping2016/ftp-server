@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <netdb.h>
 #include <linux/limits.h>
-#include "reactor.h"
+#include "helper.h"
 #include "ftp_client.h"
 
 typedef struct ftp_server_t {
@@ -13,8 +13,8 @@ typedef struct ftp_server_t {
 
     struct sockaddr addr;
     socklen_t addrlen;
-    char host[NI_MAXHOST];
-    char port[NI_MAXSERV];
+    char host[ADDRSTRLEN];
+    in_port_t port;
     struct ftp_server_t *prev, *next;
 } ftp_server_t;
 

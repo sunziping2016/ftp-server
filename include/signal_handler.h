@@ -1,7 +1,7 @@
 #ifndef FTP_SERVER_SIGNAL_HANDLER_H
 #define FTP_SERVER_SIGNAL_HANDLER_H
 
-#include "reactor.h"
+#include "helper.h"
 
 typedef struct signal_handler_t {
     epoll_item_t epoll_item;
