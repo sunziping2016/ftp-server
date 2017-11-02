@@ -15,5 +15,6 @@ typedef struct {
 } epoll_item_t;
 
 int get_addrin_info(const struct sockaddr *addr, char *host, socklen_t host_len, uint16_t *port);
+int path_resolve(char *result, const char *from, const char *to, const char *root);
 
 #endif

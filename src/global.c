@@ -18,6 +18,7 @@ const char *help_str = ""
         "  -p, --port                port to bind\n"
         "  --no-anonymous            disable anonymous user\n"
         "  -r, --root                root directory for anonymous user\n"
+        "  -d, --debug               enable debug mode\n"
         "  -v, --verbose             enable verbose mode\n"
         "  -q, --quite               enable quite mode\n"
         "  -h, --help                print this help message\n"
@@ -44,8 +45,16 @@ void global_init()
     ftp_users_init();
 }
 
-int global_start(int argc, char *const argv[])
+int global_start(int argc, char *argv[])
 {
+    for (int i = 0; i < argc; ++i) {
+        if (strcmp(argv[i], "-port") == 0)
+            argv[i] = "--port";
+        else if (strcmp(argv[i], "-host") == 0)
+            argv[i] = "--host";
+        else if (strcmp(argv[i], "-root") == 0)
+            argv[i] = "--root";
+    }
     char *host = NULL, *port = "21", *root = "/tmp";
     int family = AF_UNSPEC, cli = 0, anonymous = 1;
     struct option long_options[] = {
@@ -53,6 +62,7 @@ int global_start(int argc, char *const argv[])
             {"port",         required_argument, NULL,               'p'},
             {"no-anonymous", no_argument, &anonymous,               0},
             {"root",         required_argument, NULL,               'r'},
+            {"debug",        no_argument,       NULL,               'd'},
             {"verbose",      no_argument,       NULL,               'v'},
             {"debug",        no_argument, (int *) &global.loglevel, LOGLEVEL_DEBUG},
             {"quite",        no_argument,       NULL,               'q'},
@@ -61,7 +71,7 @@ int global_start(int argc, char *const argv[])
             {NULL, 0,                           NULL,               0}
     };
     int ch;
-    while ((ch = getopt_long(argc, argv, "46p:r:vqhV", long_options, NULL)) != -1) {
+    while ((ch = getopt_long(argc, argv, "46p:r:dvqhV", long_options, NULL)) != -1) {
         switch (ch) {
             case 0:
                 break;
@@ -76,6 +86,9 @@ int global_start(int argc, char *const argv[])
                 break;
             case 'r':
                 root = optarg;
+                break;
+            case 'd':
+                global.loglevel = LOGLEVEL_DEBUG;
                 break;
             case 'v':
                 global.loglevel = LOGLEVEL_INFO;
@@ -115,8 +128,16 @@ int global_start(int argc, char *const argv[])
     global_add_fd(global.epfd, FD_EPOLL, &global);
     if (cli)
         ftp_cli_start();
-    if (anonymous)
-        ftp_users_add("anonymous", NULL, root);
+    if (anonymous) {
+        char path[PATH_MAX];
+        getcwd(path, PATH_MAX);
+        if (root) {
+            char result[PATH_MAX];
+            path_resolve(result, path, root, NULL);
+            ftp_users_add("anonymous", NULL, result);
+        } else
+            ftp_users_add("anonymous", NULL, path);
+    }
     if ((host || port) && root)
         ftp_server_create(host, port, family);
     signal_handler_start();
@@ -233,7 +254,9 @@ static const char *fd_type_str[] = {
         "ftp PASV client",
         "pipe read",
         "pipe write",
-        "ftp PORT client"
+        "ftp PORT client",
+        "file read",
+        "file write"
 };
 
 int global_list_fd()

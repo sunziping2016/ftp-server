@@ -7,8 +7,8 @@
 #define CLIENT_RECV_BUFFER_SIZE 4096
 #define CLIENT_SEND_BUFFER_SIZE 4096
 
-#define CLIENT_CHUNK_SIZE 10
-#define CLIENT_MAX_CHUNK_NUM 2
+#define CLIENT_CHUNK_SIZE 4096
+#define CLIENT_MAX_CHUNK_NUM (1024 * 16)
 #define CLIENT_MAX_CHUNK_POOL_NUM (1024 * 512)
 
 enum ftp_client_data_command_t {
@@ -40,8 +40,10 @@ typedef struct ftp_client_t {
     enum ftp_client_data_command_t data_command;
     ftp_client_truck_t *head, *tail;
     size_t head_pos, tail_pos, chunk_num;
+    ssize_t data_size;
 
     char *user, *root;
+    size_t root_len;
     int processing, busy, logged_in;
     int exit_on_sent;
     char wd[PATH_MAX];

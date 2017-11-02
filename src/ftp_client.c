@@ -8,6 +8,7 @@
 #include <stdarg.h>
 #include <assert.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 
 typedef int (*ftp_client_command_callback_t)(ftp_client_t *client, char *arg);
 
@@ -143,17 +144,26 @@ static int ftp_client_handle_pass(ftp_client_t *client, char *arg)
                 client->busy = 1;
             else
                 ftp_client_write(client, "451 Server temporary unavailable.\r\n");
-            ret = -1;
         } else {
-            client->root = malloc(strlen(data->root) + 1);
-            if (!client->root) {
-                ftp_client_write(client, "451 Server temporary unavailable.\r\n");
+            char *root = data->root ? data->root : "/";
+            struct stat s;
+            ret = stat(root, &s);
+            if (ret == -1 || !S_ISDIR(s.st_mode)) {
+                ftp_client_write(client, "530 Root directory unavailable.\r\n");
                 ret = -1;
             } else {
-                strcpy(client->root, data->root);
-                strcpy(client->wd, client->root);
-                ftp_client_write(client, "230 Login successful.\r\n");
-                client->logged_in = 1;
+                client->root_len = strlen(root);
+                client->root = malloc(client->root_len + 1);
+                if (!client->root) {
+                    client->root_len = 0;
+                    ftp_client_write(client, "530 Server temporary unavailable.\r\n");
+                } else {
+                    strcpy(client->root, root);
+                    strcpy(client->wd, client->root);
+                    ftp_client_write(client, "230 Login successful.\r\n");
+                    client->logged_in = 1;
+                    ret = 0;
+                }
             }
         }
     }
@@ -189,7 +199,7 @@ static int ftp_client_handle_quit(ftp_client_t *client, char *arg)
     return 0;
 }
 
-static epoll_callback_t ftp_data_update(ftp_client_t *client)
+static epoll_callback_t ftp_client_data_update(ftp_client_t *client)
 {
     int status = 0;
     while (client->data_write_fd != -1) {
@@ -198,30 +208,10 @@ static epoll_callback_t ftp_data_update(ftp_client_t *client)
             close(client->data_write_fd);
             global_remove_fd(client->data_write_fd);
             client->data_write_fd = -1;
-        } else if (client->data_events & EPOLLOUT && has_read) {
-            ftp_client_truck_t *head = client->head;
-            ssize_t ret = write(client->data_write_fd, head->chunk + client->head_pos, client->head == client->tail ?
-                                client->tail_pos - client->head_pos : CLIENT_CHUNK_SIZE - client->head_pos);
-            if (ret == -1) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK)
-                    client->data_events &= ~EPOLLOUT;
-                else {
-                    if (global.loglevel >= LOGLEVEL_ERROR)
-                        fprintf(stderr, "E: write(fd: client#%d.write#%d): %s\n",
-                                client->fd, client->data_write_fd, strerror(errno));
-                    ftp_client_write(client, "426 Failure writing stream.\r\n");
-                    status = 1;
-                }
-                break;
-            } else
-                client->head_pos += ret;
-            if (client->head_pos == CLIENT_CHUNK_SIZE) {
-                remove_data_trunk(client);
-                client->head_pos = 0;
-            }
-        } else if (client->data_read_fd != -1 && client->data_events & EPOLLIN &&
+        } else if ((client->data_command == DC_STOR || !(client->data_events & EPOLLOUT) || !has_read) &&
+                client->data_read_fd != -1 && client->data_events & EPOLLIN &&
                 (client->chunk_num < CLIENT_MAX_CHUNK_NUM || client->tail_pos < CLIENT_CHUNK_SIZE)) {
-            if (!client->tail) {
+            if (!client->tail || client->tail_pos == CLIENT_CHUNK_SIZE) {
                 if (add_data_trunk(client) == -1) {
                     ftp_client_write(client, "426 Server temporary unavailable.\r\n");
                     status = 1;
@@ -256,9 +246,29 @@ static epoll_callback_t ftp_data_update(ftp_client_t *client)
                 }
                 client->tail_pos = 0;
             }
+        } else if (client->data_events & EPOLLOUT && has_read) {
+            ftp_client_truck_t *head = client->head;
+            ssize_t ret = write(client->data_write_fd, head->chunk + client->head_pos, client->head == client->tail ?
+                                                                                       client->tail_pos - client->head_pos : CLIENT_CHUNK_SIZE - client->head_pos);
+            if (ret == -1) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                    client->data_events &= ~EPOLLOUT;
+                else {
+                    if (global.loglevel >= LOGLEVEL_ERROR)
+                        fprintf(stderr, "E: write(fd: client#%d.write#%d): %s\n",
+                                client->fd, client->data_write_fd, strerror(errno));
+                    ftp_client_write(client, "426 Failure writing stream.\r\n");
+                    status = 1;
+                }
+                break;
+            } else
+                client->head_pos += ret;
+            if (client->head_pos == CLIENT_CHUNK_SIZE) {
+                remove_data_trunk(client);
+                client->head_pos = 0;
+            }
         } else
             break;
-
     }
     if (status) {
         clear_data_connection(client);
@@ -267,7 +277,10 @@ static epoll_callback_t ftp_data_update(ftp_client_t *client)
     } else if (client->data_read_fd == -1 && client->data_write_fd == -1) {
         clear_data_connection(client);
         client->busy = 0;
-        ftp_client_write(client, "226 Transfer complete.\r\n");
+        if (client->data_command == DC_LIST)
+            ftp_client_write(client, "226 Directory send OK.\r\n");
+        else
+            ftp_client_write(client, "226 Transfer complete.\r\n");
         ftp_client_update(client);
     }
     return 0;
@@ -280,7 +293,7 @@ static int ftp_client_data_read_callback(uint32_t events, void *arg)
     uint32_t filter = events & EPOLLIN;
     if (filter) {
         client->data_events |= filter;
-        ftp_data_update(client);
+        ftp_client_data_update(client);
     }
     if (client->busy && client->data_read_fd != -1 && events & EPOLLERR) {
         clear_data_connection(client);
@@ -297,7 +310,7 @@ static int ftp_client_data_write_callback(uint32_t events, void *arg)
     uint32_t filter = events & EPOLLOUT;
     if (filter) {
         client->data_events |= filter;
-        ftp_data_update(client);
+        ftp_client_data_update(client);
     }
     if (client->busy && client->data_write_fd != -1 && events & (EPOLLHUP | EPOLLERR)) {
         clear_data_connection(client);
@@ -339,30 +352,36 @@ static int ftp_client_data_try_start(ftp_client_t *client)
         global_add_fd(client->remote_fd, FD_FTP_PORT_CLIENT, client);
     }
     if (client->local_fd != -1 && client->remote_fd != -1) {
+        client->data_events = 0;
         if (client->data_command == DC_RETR || client->data_command == DC_LIST) {
             client->data_read_fd = client->local_fd;
             client->data_write_fd = client->remote_fd;
+            if (client->data_command == DC_RETR)
+                client->data_events |= EPOLLIN;
         } else {
             client->data_write_fd = client->local_fd;
             client->data_read_fd = client->remote_fd;
+            client->data_events |= EPOLLOUT;
         }
         client->local_fd = -1;
         client->remote_fd = -1;
         struct epoll_event event;
         event.events = EPOLLIN | EPOLLET;
         event.data.ptr = &client->data_read_event_data;
-        if (epoll_ctl(global.epfd, EPOLL_CTL_ADD, client->data_read_fd, &event) == -1 &&
-                global.loglevel >= LOGLEVEL_ERROR)
-            fprintf(stderr, "E: epoll_ctl(add: client#%d.read#%d): %s\n",
-                    client->fd, client->data_read_fd, strerror(errno));
-        else {
-            event.events = EPOLLOUT | EPOLLET;
-            event.data.ptr = &client->data_write_event_data;
-            if (epoll_ctl(global.epfd, EPOLL_CTL_ADD, client->data_write_fd, &event) == -1 && global.loglevel >= LOGLEVEL_ERROR)
+        if (client->data_command != DC_RETR &&
+                epoll_ctl(global.epfd, EPOLL_CTL_ADD, client->data_read_fd, &event) == -1){
+            if (global.loglevel >= LOGLEVEL_ERROR)
                 fprintf(stderr, "E: epoll_ctl(add: client#%d.read#%d): %s\n",
                         client->fd, client->data_read_fd, strerror(errno));
-            else {
-                client->data_events = 0;
+        } else {
+            event.events = EPOLLOUT | EPOLLET;
+            event.data.ptr = &client->data_write_event_data;
+            if (client->data_command != DC_STOR &&
+                    epoll_ctl(global.epfd, EPOLL_CTL_ADD, client->data_write_fd, &event) == -1) {
+                if (global.loglevel >= LOGLEVEL_ERROR)
+                    fprintf(stderr, "E: epoll_ctl(add: client#%d.read#%d): %s\n",
+                            client->fd, client->data_read_fd, strerror(errno));
+            } else {
                 client->head_pos = client->tail_pos = 0;
                 ret = 0;
             }
@@ -373,8 +392,14 @@ static int ftp_client_data_try_start(ftp_client_t *client)
         clear_data_connection(client);
         client->busy = 0;
         ftp_client_write(client, "425 Server temporary unavailable.\r\n");
-    } else
-        ftp_client_write(client, "150 Here comes the directory listing.\r\n");
+    } else {
+        if (client->data_command == DC_LIST)
+            ftp_client_write(client, "150 Here comes the directory listing.\r\n");
+        else if (client->data_command == DC_RETR)
+            ftp_client_write(client, "150 Opening BINARY mode data connection (%ld bytes).\r\n", client->data_size);
+        else
+            ftp_client_write(client, "150 Ok to send data.\r\n");
+    }
     ftp_client_update(client);
     return ret;
 }
@@ -387,6 +412,44 @@ static int ftp_client_handle_list(ftp_client_t *client, char *arg)
         ftp_client_write(client, "425 Use PORT or PASV first.\r\n");
         return -1;
     }
+    char path[PATH_MAX], param[10] = "-nN";
+    if (*arg == '-') {
+        int enable_a = 0, enable_p = 0, enable_F = 0, param_len = 3;
+        while (*arg && *arg != ' ') {
+            switch (*arg) {
+                case 'a':
+                    enable_a = 1;
+                    break;
+                case 'p':
+                    enable_p = 1;
+                    break;
+                case 'F':
+                    enable_F = 1;
+                    break;
+                default:
+                    break;
+            }
+            ++arg;
+        }
+        if (enable_a)
+            param[param_len++] = 'a';
+        if (enable_p)
+            param[param_len++] = 'p';
+        if (enable_F)
+            param[param_len++] = 'F';
+        param[param_len] = '\0';
+        if (*arg == ' ')
+            ++arg;
+    }
+    struct stat s;
+    if (path_resolve(path, client->wd, arg, client->root) == -1 ||
+            strncmp(path, client->root, client->root_len) != 0 ||
+            (path[client->root_len] && path[client->root_len] != '/') ||
+            stat(path, &s) == -1 || !S_ISDIR(s.st_mode) ||
+            access(path, R_OK | X_OK) == -1) {
+        ftp_client_write(client, "425 Failed to open directory.\r\n");
+        return -1;
+    }
     if (pipe(pipe_fd) == -1) {
         if (global.loglevel >= LOGLEVEL_ERROR)
             perror("E: pipe");
@@ -397,23 +460,70 @@ static int ftp_client_handle_list(ftp_client_t *client, char *arg)
         close(pipe_fd[1]);
     } else if (pid == 0) {
         dup2(pipe_fd[1], STDOUT_FILENO);
+        dup2(pipe_fd[1], STDERR_FILENO);
         close(pipe_fd[0]);
         close(pipe_fd[1]);
-        execlp("ls", "ls", "-n", client->wd, NULL);
+        execlp("ls", "ls", param, path, NULL);
     } else {
         close(pipe_fd[1]);
-        client->local_fd = pipe_fd[0];
-        int flags = fcntl(client->local_fd, F_GETFL);
-        fcntl(client->local_fd, F_SETFL, flags | O_NONBLOCK);
-        global_add_fd(client->local_fd, FD_PIPE_READ, client);
-        client->data_command = DC_LIST;
-        client->busy = 1;
-        ftp_client_data_try_start(client);
-        ret = 0;
+        int flags = fcntl(pipe_fd[0], F_GETFL);
+        if (flags == -1 || fcntl(pipe_fd[0], F_SETFL, flags | O_NONBLOCK) == -1) {
+            if (global.loglevel >= LOGLEVEL_ERROR)
+                perror("E: fcntl(pipe)");
+            close(pipe_fd[0]);
+        } else {
+            client->local_fd = pipe_fd[0];
+            global_add_fd(client->local_fd, FD_PIPE_READ, client);
+            client->data_command = DC_LIST;
+            client->busy = 1;
+            ftp_client_data_try_start(client);
+            ret = 0;
+        }
     }
     if (ret == -1)
         ftp_client_write(client, "425 Server temporary unavailable.\r\n");
     return ret;
+}
+
+static int ftp_client_handle_retr(ftp_client_t *client, char *arg)
+{
+    struct stat s;
+    char path[PATH_MAX];
+    int fd;
+    if (path_resolve(path, client->wd, arg, client->root) == -1 ||
+            strncmp(path, client->root, client->root_len) != 0 ||
+            (path[client->root_len] && path[client->root_len] != '/') ||
+            stat(path, &s) == -1 || !S_ISREG(s.st_mode) ||
+            (fd = open(path, O_RDONLY | O_NONBLOCK)) == -1) {
+        ftp_client_write(client, "425 Failed to open file.\r\n");
+        return -1;
+    }
+    client->local_fd = fd;
+    global_add_fd(fd, FD_FILE_READ, client);
+    client->data_size = s.st_size;
+    client->data_command = DC_RETR;
+    client->busy = 1;
+    ftp_client_data_try_start(client);
+    return 0;
+}
+
+static int ftp_client_handle_stor(ftp_client_t *client, char *arg)
+{
+    char path[PATH_MAX];
+    int fd;
+    if (path_resolve(path, client->wd, arg, client->root) == -1 ||
+            strncmp(path, client->root, client->root_len) != 0 ||
+            (path[client->root_len] && path[client->root_len] != '/') ||
+            (fd = open(path, O_WRONLY | O_CREAT | O_NONBLOCK, 0644)) == -1) {
+        ftp_client_write(client, "425 Failed to open file.\r\n");
+        return -1;
+    }
+    client->local_fd = fd;
+    global_add_fd(fd, FD_FILE_WRITE, client);
+    client->data_command = DC_STOR;
+    client->busy = 1;
+    ftp_client_data_try_start(client);
+    return 0;
 }
 
 static int ftp_client_pasv_callback(uint32_t event, void *arg)
@@ -517,6 +627,63 @@ static int ftp_client_handle_port(ftp_client_t *client, char *arg)
     return 0;
 }
 
+static int ftp_client_handle_cwd(ftp_client_t *client, char *arg)
+{
+    int ret = -1;
+    char path[PATH_MAX];
+    struct stat s;
+    if (path_resolve(path, client->wd, arg, client->root) != -1 &&
+            strncmp(path, client->root, client->root_len) == 0 &&
+            (!path[client->root_len] || path[client->root_len] == '/') &&
+            stat(path, &s) != -1 && S_ISDIR(s.st_mode) &&
+            access(path, R_OK | X_OK) == 0) {
+        ftp_client_write(client, "250 Directory successfully changed.\r\n");
+        strcpy(client->wd, path);
+        ret = 0;
+    }
+    if (ret == -1)
+        ftp_client_write(client, "550 Failed to change directory.\r\n");
+    return ret;
+}
+
+static int ftp_client_handle_pwd(ftp_client_t *client, char *arg)
+{
+    (void) arg;
+    const char *root = client->wd + client->root_len;
+    if (!*root)
+        root = "/";
+    ftp_client_write(client, "257 \"%s\" is the current directory.\r\n", root);
+    return 0;
+}
+
+static int ftp_client_handle_mkd(ftp_client_t *client, char *arg)
+{
+    char path[PATH_MAX];
+    if (path_resolve(path, client->wd, arg, client->root) == -1 ||
+            strncmp(path, client->root, client->root_len) != 0 ||
+            (path[client->root_len] && path[client->root_len] != '/') ||
+            mkdir(path, 0755) == -1) {
+        ftp_client_write(client, "550 Create directory operation failed.\r\n");
+        return -1;
+    }
+    ftp_client_write(client, "257 \"%s\" created.\r\n", arg);
+    return 0;
+}
+
+static int ftp_client_handle_rmd(ftp_client_t *client, char *arg)
+{
+    char path[PATH_MAX];
+    if (path_resolve(path, client->wd, arg, client->root) == -1 ||
+            strncmp(path, client->root, client->root_len) != 0 ||
+            (path[client->root_len] && path[client->root_len] != '/') ||
+            rmdir(path) == -1) {
+        ftp_client_write(client, "550 Remove directory operation failed.\r\n");
+        return -1;
+    }
+    ftp_client_write(client, "250 Remove directory operation successful.\r\n", arg);
+    return 0;
+}
+
 ftp_client_command_t *ftp_client_lookup_command(ftp_client_command_t *commands, size_t len, const char *input)
 {
     size_t begin = 0, middle;
@@ -543,20 +710,21 @@ ftp_client_command_t before_login[] = {
         {"QUIT", 4, ftp_client_handle_quit},
         {"USER", 4, ftp_client_handle_user}
 }, after_login[] = {
-        {"CWD",  3, NULL},
+        {"CWD",  3, ftp_client_handle_cwd},
         {"EPSV", 4, NULL},
         {"EPRT", 4, NULL},
         {"LIST", 4, ftp_client_handle_list},
         {"LPSV", 4, NULL},
         {"LPRT", 4, NULL},
-        {"MKD",  3, NULL},
+        {"MKD",  3, ftp_client_handle_mkd},
         {"PASS", 4, ftp_client_handle_pass},
         {"PASV", 4, ftp_client_handle_pasv},
         {"PORT", 4, ftp_client_handle_port},
+        {"PWD",  3, ftp_client_handle_pwd},
         {"QUIT", 4, ftp_client_handle_quit},
-        {"RETR", 4, NULL},
-        {"RMD",  4, NULL},
-        {"STOR", 4, NULL},
+        {"RETR", 4, ftp_client_handle_retr},
+        {"RMD",  3, ftp_client_handle_rmd},
+        {"STOR", 4, ftp_client_handle_stor},
         {"SYST", 4, ftp_client_handle_syst},
         {"TYPE", 4, ftp_client_handle_type},
         {"USER", 4, ftp_client_handle_user}
@@ -566,6 +734,8 @@ int ftp_client_command(ftp_client_t *client, char *input)
 {
     if (!*input)
         return 0;
+    if (global.loglevel >= LOGLEVEL_DEBUG)
+        printf("D: client#%d: %s\n", client->fd, input);
     ftp_client_command_t *command;
     if (!client->logged_in)
         command = ftp_client_lookup_command(before_login, sizeof(before_login) / sizeof(before_login[0]), input);

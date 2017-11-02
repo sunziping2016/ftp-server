@@ -38,8 +38,9 @@ enum fd_type_t {
     FD_FTP_PASV_CLIENT,
     FD_PIPE_READ,
     FD_PIPE_WRITE,
-    FD_FTP_PORT_CLIENT
-
+    FD_FTP_PORT_CLIENT,
+    FD_FILE_READ,
+    FD_FILE_WRITE
 };
 
 typedef struct fd_vector_t {
@@ -69,7 +70,7 @@ extern const char *help_str, *version_str;
 extern global_t global;
 
 void global_init();
-int global_start(int argc, char *const argv[]);
+int global_start(int argc, char *argv[]);
 int global_run();
 int global_close();
 
