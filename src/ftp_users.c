@@ -40,11 +40,11 @@ int ftp_users_start()
         if (global.loglevel >= LOGLEVEL_ERROR)
             fprintf(stderr, "E: hash_table_create\n");
         return -1;
-    }
+   }
     return 0;
 }
 
-int ftp_users_add(const char *username, const char *password, const char *root)
+int ftp_users_add(const char *username, const char *password, const char *root, int hashed)
 {
     uint32_t hash = hash_function(username);
     if (hash_table_search_pre_hashed(global.users, hash, username)) {
@@ -76,22 +76,26 @@ int ftp_users_add(const char *username, const char *password, const char *root)
             free(data);
             return -1;
         }
-        char salt[BCRYPT_HASHSIZE];
-        if (bcrypt_gensalt(12, salt) != 0) {
-            if (global.loglevel >= LOGLEVEL_ERROR)
-                fprintf(stderr, "E: bcrypt_gensalt\n");
-            free(data->password);
-            free(key);
-            free(data);
-            return -1;
-        }
-        if(bcrypt_hashpw(password, salt, data->password) != 0) {
-            if (global.loglevel >= LOGLEVEL_ERROR)
-                fprintf(stderr, "E: bcrypt_hashpw\n");
-            free(data->password);
-            free(key);
-            free(data);
-            return -1;
+        if (hashed)
+            strcpy(data->password, password);
+        else {
+            char salt[BCRYPT_HASHSIZE];
+            if (bcrypt_gensalt(12, salt) != 0) {
+                if (global.loglevel >= LOGLEVEL_ERROR)
+                    fprintf(stderr, "E: bcrypt_gensalt\n");
+                free(data->password);
+                free(key);
+                free(data);
+                return -1;
+            }
+            if (bcrypt_hashpw(password, salt, data->password) != 0) {
+                if (global.loglevel >= LOGLEVEL_ERROR)
+                    fprintf(stderr, "E: bcrypt_hashpw\n");
+                free(data->password);
+                free(key);
+                free(data);
+                return -1;
+            }
         }
     } else
         data->password = NULL;
@@ -116,7 +120,8 @@ int ftp_users_add(const char *username, const char *password, const char *root)
         free(key);
         free(data);
         return -1;
-    }
+    } else if (global.loglevel >= LOGLEVEL_INFO)
+        printf("I: added user \"%s\"\n", username);
     return 0;
 }
 
@@ -165,5 +170,18 @@ int ftp_users_list()
     }
     if (!users)
         printf("No users\n");
+    return 0;
+}
+
+int ftp_users_remove(const char *username)
+{
+    struct hash_entry *user = hash_table_search(global.users, username);
+    if (!user) {
+        if (global.loglevel >= LOGLEVEL_ERROR)
+            fprintf(stderr, "E: user does not exists\n");
+        return -1;
+    }
+    delete_function(user);
+    hash_table_remove_entry(global.users, user);
     return 0;
 }

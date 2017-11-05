@@ -17,6 +17,8 @@ const char *help_str = ""
         "  --cli                     launch cli\n"
         "  -p, --port                port to bind\n"
         "  --no-anonymous            disable anonymous user\n"
+        "  --no-server               disable default server\n"
+        "  --no-prompt               disable cli prompt\n"
         "  -r, --root                root directory for anonymous user\n"
         "  -d, --debug               enable debug mode\n"
         "  -v, --verbose             enable verbose mode\n"
@@ -56,11 +58,13 @@ int global_start(int argc, char *argv[])
             argv[i] = "--root";
     }
     char *host = NULL, *port = "21", *root = "/tmp";
-    int family = AF_UNSPEC, cli = 0, anonymous = 1;
+    int family = AF_UNSPEC, cli = 0, anonymous = 1, server = 1, prompt = 1;
     struct option long_options[] = {
             {"cli",          no_argument, &cli,                     1},
             {"port",         required_argument, NULL,               'p'},
             {"no-anonymous", no_argument, &anonymous,               0},
+            {"no-server",    no_argument, &server,                  0},
+            {"no-prompt",    no_argument, &prompt,                  0},
             {"root",         required_argument, NULL,               'r'},
             {"debug",        no_argument,       NULL,               'd'},
             {"verbose",      no_argument,       NULL,               'v'},
@@ -127,18 +131,18 @@ int global_start(int argc, char *argv[])
     }
     global_add_fd(global.epfd, FD_EPOLL, &global);
     if (cli)
-        ftp_cli_start();
+        ftp_cli_start(prompt);
     if (anonymous) {
         char path[PATH_MAX];
         getcwd(path, PATH_MAX);
         if (root) {
             char result[PATH_MAX];
             path_resolve(result, path, root, NULL);
-            ftp_users_add("anonymous", NULL, result);
+            ftp_users_add("anonymous", NULL, result, 0);
         } else
-            ftp_users_add("anonymous", NULL, path);
+            ftp_users_add("anonymous", NULL, path, 0);
     }
-    if ((host || port) && root)
+    if (server && (host || port) && root)
         ftp_server_create(host, port, family);
     signal_handler_start();
     return 0;

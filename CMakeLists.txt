@@ -29,7 +29,7 @@ add_custom_target(hash_table.o DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/ha
 
 add_executable(server ${SOURCE_FILES})
 add_dependencies(server bcrypt.a hash_table.o)
-target_link_libraries(server readline resolv
+target_link_libraries(server readline
         ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/bcrypt/bcrypt.a
         ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/hash_table/hash_table.o)
 

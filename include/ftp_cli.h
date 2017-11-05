@@ -18,7 +18,9 @@ typedef struct ftp_cli_command_t {
 } ftp_cli_command_t;
 
 void ftp_cli_init();
-int ftp_cli_start();
+int ftp_cli_start(int prompt);
 int ftp_cli_stop();
+
+int parse_arguments(char *arg, int argc, char *argv[]);
 
 #endif

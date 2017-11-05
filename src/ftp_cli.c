@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdio.h>
@@ -5,7 +6,9 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 #include <malloc.h>
+#include <stdlib.h>
 
+#include "bcrypt.h"
 #include "global.h"
 
 static int ftp_cli_help(char *arg);
@@ -17,17 +20,195 @@ const char *banner = ""
         "%s\n"
         "Type \"help\" for more information\n";
 
+static int ftp_cli_add_server(char *arg)
+{
+    char *argv[2] = {
+            "localhost",
+            "21"
+    };
+    if (parse_arguments(arg, 2, argv) == -1)
+        return -1;
+    return ftp_server_create(argv[0], argv[1], AF_UNSPEC);
+}
+
+static int ftp_cli_add_server4(char *arg)
+{
+    char *argv[2] = {
+            "localhost",
+            "21"
+    };
+    if (parse_arguments(arg, 2, argv) == -1)
+        return -1;
+    return ftp_server_create(argv[0], argv[1], AF_INET);
+}
+
+static int ftp_cli_add_server6(char *arg)
+{
+    char *argv[2] = {
+            "localhost",
+            "21"
+    };
+    if (parse_arguments(arg, 2, argv) == -1)
+        return -1;
+    return ftp_server_create(argv[0], argv[1], AF_INET6);
+}
+
+static int ftp_cli_close_server(char *arg)
+{
+    char *argv[1];
+    int argc = parse_arguments(arg, 1, argv);
+    if (argc == -1)
+        return -1;
+    if (argc != 1) {
+        fprintf(stderr, "remove-server <fd>\n");
+        return -1;
+    }
+    int fd = atoi(argv[0]);
+    if (fd > 0 && (size_t) fd < global.fd_vector_capacity && global.fd_vector[fd].fd_type == FD_FTP_SERVER)
+        return ftp_server_close(global.fd_vector[fd].pointer);
+    else
+        fprintf(stderr, "Cannot find the server.\n");
+    return -1;
+}
+
+static int ftp_cli_close_client(char *arg)
+{
+    char *argv[1];
+    int argc = parse_arguments(arg, 1, argv);
+    if (argc == -1)
+        return -1;
+    if (argc != 1) {
+        fprintf(stderr, "remove-client <fd>\n");
+        return -1;
+    }
+    int fd = atoi(argv[0]);
+    if (fd > 0 && (size_t) fd < global.fd_vector_capacity && global.fd_vector[fd].fd_type == FD_FTP_CLIENT)
+        return ftp_client_close(global.fd_vector[fd].pointer);
+    else
+        fprintf(stderr, "Cannot find the client.\n");
+    return -1;
+}
+
+static int ftp_cli_add_user(char *arg)
+{
+    char *argv[3] = {
+        NULL,
+        NULL,
+        NULL
+    };
+    int argc = parse_arguments(arg, 3, argv);
+    if (argc == -1)
+        return -1;
+    if (argc < 1) {
+        fprintf(stderr, "add-user <username> [<root> [<hash>]]\n");
+        return -1;
+    }
+    char path[PATH_MAX];
+    getcwd(path, PATH_MAX);
+    if (argv[1]) {
+        char result[PATH_MAX];
+        path_resolve(result, path, argv[1], NULL);
+        return ftp_users_add(argv[0], argv[2], path, 1);
+    }
+    return ftp_users_add(argv[0], argv[2], path, 1);
+}
+
+static int ftp_cli_hash_password(char *arg)
+{
+    char *argv[1];
+    int argc = parse_arguments(arg, 1, argv);
+    if (argc == -1)
+        return -1;
+    if (argc < 1) {
+        fprintf(stderr, "hash-password <password>\n");
+        return -1;
+    }
+    char salt[BCRYPT_HASHSIZE], password[BCRYPT_HASHSIZE];
+    if (bcrypt_gensalt(12, salt) != 0) {
+        if (global.loglevel >= LOGLEVEL_ERROR)
+            fprintf(stderr, "E: bcrypt_gensalt\n");
+        return -1;
+    }
+    if(bcrypt_hashpw(argv[0], salt, password) != 0) {
+        if (global.loglevel >= LOGLEVEL_ERROR)
+            fprintf(stderr, "E: bcrypt_hashpw\n");
+        return -1;
+    }
+    printf("%s\n", password);
+    return 0;
+}
+
+static int ftp_cli_remove_user(char *arg)
+{
+    char *argv[1];
+    int argc = parse_arguments(arg, 1, argv);
+    if (argc == -1)
+        return -1;
+    if (argc < 1) {
+        fprintf(stderr, "remove-user <username>\n");
+        return -1;
+    }
+    return ftp_users_remove(argv[0]);
+}
+
 ftp_cli_command_t commands[] = {
-        {"exit",             (ftp_cli_command_callback_t) ftp_cli_exit,         "exit the program"},
-        {"help",             ftp_cli_help,                                      "display this text"},
-        {"list-client",      (ftp_cli_command_callback_t) ftp_client_list,      "list clients"},
-        {"list-fd",          (ftp_cli_command_callback_t) global_list_fd,       "list file descriptors"},
-        {"list-server",      (ftp_cli_command_callback_t) ftp_server_list,      "list servers"},
-        {"list-user",        (ftp_cli_command_callback_t) ftp_users_list,       "list users"},
-        {"run",              (ftp_cli_command_callback_t) ftp_cli_run,          "exit cli without closing the server"},
-        {"stop-all-servers", (ftp_cli_command_callback_t) ftp_server_close_all, "stop all the ftp servers"},
+        {"exit",               (ftp_cli_command_callback_t) ftp_cli_exit,         "exit the program"},
+        {"help",               ftp_cli_help,                                      "display this text"},
+        {"list-client",        (ftp_cli_command_callback_t) ftp_client_list,      "list clients"},
+        {"list-fd",            (ftp_cli_command_callback_t) global_list_fd,       "list file descriptors"},
+        {"add-server",         ftp_cli_add_server,                                "add ftp server"},
+        {"hash-password",      ftp_cli_hash_password,                             "use bcrypt to hash password"},
+        {"add-server4",        ftp_cli_add_server4,                               "add IPv4 ftp server"},
+        {"add-server6",        ftp_cli_add_server6,                               "add IPv6 ftp server"},
+        {"add-user",           ftp_cli_add_user,                                  "add user"},
+        {"list-server",        (ftp_cli_command_callback_t) ftp_server_list,      "list servers"},
+        {"list-user",          (ftp_cli_command_callback_t) ftp_users_list,       "list users"},
+        {"run",                (ftp_cli_command_callback_t) ftp_cli_run,          "exit cli without closing the server"},
+        {"remove-all-clients", (ftp_cli_command_callback_t) ftp_client_close_all, "remove all the ftp clients"},
+        {"remove-all-servers", (ftp_cli_command_callback_t) ftp_server_close_all, "remove all the ftp servers"},
+        {"remove-client",      ftp_cli_close_client,                              "remove ftp client"},
+        {"remove-server",      ftp_cli_close_server,                              "remove ftp server"},
+        {"remove-user",        ftp_cli_remove_user,                               "remove user"},
         {NULL, NULL, NULL}
 };
+
+int parse_arguments(char *arg, int argc, char *argv[])
+{
+    int i = 0;
+    for (i = 0; i < argc && *arg; ++i) {
+        while (*arg && isspace(*arg))
+            ++arg;
+        if (!*arg)
+            break;
+        if (*arg == '\"' || *arg == '\'') {
+            char quote = *arg;
+            char *to = argv[i] = ++arg;
+            while (*arg && *arg != quote) {
+                if (*arg == '\\' && !*++arg)
+                    goto error;
+                if (to != arg)
+                    *to = *arg;
+                ++to;
+                ++arg;
+            }
+            if (!*arg)
+                goto error;
+            *to = '\0';
+            if (*++arg && !isspace(*arg))
+                goto error;
+        } else {
+            argv[i] = arg;
+            while (*arg && !isspace(*arg))
+                ++arg;
+            if (*arg)
+                *arg++ = '\0';
+        }
+    }
+    return i;
+error:
+    fprintf(stderr, "Cannot parse arguments.\n");
+    return -1;
+}
 
 static int ftp_cli_exit()
 {
@@ -43,14 +224,18 @@ static int ftp_cli_run()
 static int ftp_cli_help(char *arg)
 {
     int i, printed = 0;
+    char *argv[1];
+    int argc = parse_arguments(arg, 1, argv);
+    if (argc == -1)
+        return -1;
     for (i = 0; commands[i].name; i++) {
-        if (!*arg || strcmp(arg, commands[i].name) == 0) {
+        if (argc == 0 || strcmp(argv[0], commands[i].name) == 0) {
             printf("%-20s%s\n", commands[i].name, commands[i].doc);
             ++printed;
         }
     }
     if (!printed) {
-        printf("No commands match `%s' Possibilities are:\n", arg);
+        printf("No commands match `%s' Possibilities are:\n", argv[0]);
         for (i = 0; commands[i].name; ++i) {
             if (printed == 6) {
                 printed = 0;
@@ -166,7 +351,7 @@ void ftp_cli_init()
     global.cli.epoll_item.arg = NULL;
 }
 
-int ftp_cli_start()
+int ftp_cli_start(int prompt)
 {
     int ret = -1;
     struct epoll_event event;
@@ -178,10 +363,11 @@ int ftp_cli_start()
     } else {
         ++global.epoll_size;
         global.cli.fd = STDIN_FILENO;
-        printf(banner, version_str);
+        if (prompt)
+            printf(banner, version_str);
         rl_readline_name = "minimum-ftpd";
         rl_attempted_completion_function = ftp_cli_completion;
-        rl_callback_handler_install("> ", ftp_cli_rl_callback);
+        rl_callback_handler_install(prompt ? "> " : "", ftp_cli_rl_callback);
         ret = 0;
     }
     return ret;
