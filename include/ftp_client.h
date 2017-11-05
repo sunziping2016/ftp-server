@@ -34,7 +34,7 @@ typedef struct ftp_client_t {
 
     epoll_item_t pasv_event_data;
     int local_fd, remote_fd, pasv_fd;
-    struct sockaddr port_addr;
+    struct sockaddr_storage port_addr;
     socklen_t port_addrlen;
 
     enum ftp_client_data_command_t data_command;
@@ -48,7 +48,7 @@ typedef struct ftp_client_t {
     int exit_on_sent;
     char wd[PATH_MAX];
 
-    struct sockaddr local_addr, peer_addr;
+    struct sockaddr_storage local_addr, peer_addr;
     socklen_t local_addrlen, peer_addrlen;
     char local_host[ADDRSTRLEN];
     char peer_host[ADDRSTRLEN];
@@ -65,7 +65,7 @@ typedef struct ftp_client_t {
 } ftp_client_t;
 
 void ftp_client_init();
-int ftp_client_add(int fd, struct sockaddr *addr, socklen_t len);
+int ftp_client_add(int fd, struct sockaddr_storage *addr, socklen_t len);
 int ftp_client_close(ftp_client_t *client);
 int ftp_client_close_all();
 int ftp_client_list();

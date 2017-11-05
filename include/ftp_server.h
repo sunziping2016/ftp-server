@@ -11,7 +11,7 @@ typedef struct ftp_server_t {
     epoll_item_t event_data;
     int fd;
 
-    struct sockaddr addr;
+    struct sockaddr_storage addr;
     socklen_t addrlen;
     char host[ADDRSTRLEN];
     in_port_t port;

@@ -1,12 +1,13 @@
 #include "global.h"
 
+#include <arpa/inet.h>
 #include <malloc.h>
+#include <stdlib.h>
 #include <sys/epoll.h>
 #include <errno.h>
 #include <string.h>
 #include <unistd.h>
 #include <stdarg.h>
-#include <assert.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 
@@ -48,7 +49,6 @@ static int add_data_trunk(ftp_client_t *client)
 
 static void remove_data_trunk(ftp_client_t *client)
 {
-    assert(client->head != NULL);
     ftp_client_truck_t *temp;
     if (client->head == client->tail) {
         temp = client->head;
@@ -330,7 +330,7 @@ static int ftp_client_data_try_start(ftp_client_t *client)
 {
     int ret = -1;
     if (client->local_fd != -1 && client->port_addrlen) {
-        client->remote_fd = socket(client->port_addr.sa_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
+        client->remote_fd = socket(client->port_addr.ss_family, SOCK_STREAM | SOCK_NONBLOCK, IPPROTO_TCP);
         if (client->remote_fd == -1) {
             clear_data_connection(client);
             client->busy = 0;
@@ -338,7 +338,7 @@ static int ftp_client_data_try_start(ftp_client_t *client)
             ftp_client_update(client);
             return -1;
         }
-        if (connect(client->remote_fd, &client->port_addr, client->port_addrlen) == -1 &&
+        if (connect(client->remote_fd, (struct sockaddr *) &client->port_addr, client->port_addrlen) == -1 &&
                 errno != EINPROGRESS) {
             if (global.loglevel >= LOGLEVEL_ERROR)
                 fprintf(stderr, "E: connect(client#%d.port#%d): %s\n", client->fd,
@@ -514,7 +514,26 @@ static int ftp_client_handle_stor(ftp_client_t *client, char *arg)
     if (path_resolve(path, client->wd, arg, client->root) == -1 ||
             strncmp(path, client->root, client->root_len) != 0 ||
             (path[client->root_len] && path[client->root_len] != '/') ||
-            (fd = open(path, O_WRONLY | O_CREAT | O_NONBLOCK, 0644)) == -1) {
+            (fd = open(path, O_WRONLY | O_CREAT | O_NONBLOCK | O_TRUNC, 0644)) == -1) {
+        ftp_client_write(client, "425 Failed to open file.\r\n");
+        return -1;
+    }
+    client->local_fd = fd;
+    global_add_fd(fd, FD_FILE_WRITE, client);
+    client->data_command = DC_STOR;
+    client->busy = 1;
+    ftp_client_data_try_start(client);
+    return 0;
+}
+
+static int ftp_client_handle_appe(ftp_client_t *client, char *arg)
+{
+    char path[PATH_MAX];
+    int fd;
+    if (path_resolve(path, client->wd, arg, client->root) == -1 ||
+        strncmp(path, client->root, client->root_len) != 0 ||
+        (path[client->root_len] && path[client->root_len] != '/') ||
+        (fd = open(path, O_WRONLY | O_CREAT | O_NONBLOCK | O_APPEND, 0644)) == -1) {
         ftp_client_write(client, "425 Failed to open file.\r\n");
         return -1;
     }
@@ -557,11 +576,11 @@ static int ftp_client_handle_pasv(ftp_client_t *client, char *arg)
     (void) arg;
     int ret = -1;
     clear_data_connection(client);
-    if (client->local_addr.sa_family != AF_INET) {
+    if (client->local_addr.ss_family != AF_INET) {
         ftp_client_write(client, "522: No IPv4 address available for PASV. Use EPSV.\r\n");
         return -1;
     }
-    client->pasv_fd = socket(client->local_addr.sa_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    client->pasv_fd = socket(client->local_addr.ss_family, SOCK_STREAM | SOCK_NONBLOCK, IPPROTO_TCP);
     if (client->pasv_fd == -1) {
         if (global.loglevel >= LOGLEVEL_ERROR)
             fprintf(stderr, "E: socket(client#%d.pasv-server): %s\n", client->fd, strerror(errno));
@@ -599,8 +618,79 @@ static int ftp_client_handle_pasv(ftp_client_t *client, char *arg)
 
                 global_add_fd(client->pasv_fd, FD_FTP_PASV_SERVER, client);
                 unsigned char *host = (unsigned char *) &addr.sin_addr, *port = (unsigned char *) &addr.sin_port;
-                ftp_client_write(client, "227 Entering Passive Mode (%u,%u,%u,%u,%u,%u).\r\n",
+                ftp_client_write(client, "227 Entering Passive Mode (%u,%u,%u,%u,%u,%u)\r\n",
                                  host[0], host[1], host[2], host[3], port[0], port[1]);
+                ret = 0;
+            }
+        }
+    }
+    if (ret == -1)
+        ftp_client_write(client, "451 Server temporary unavailable.\r\n");
+    return 0;
+}
+
+static int ftp_client_handle_epsv(ftp_client_t *client, char *arg)
+{
+    (void) arg;
+    int ret = -1;
+    clear_data_connection(client);
+    client->pasv_fd = socket(client->local_addr.ss_family, SOCK_STREAM | SOCK_NONBLOCK, IPPROTO_TCP);
+    if (client->pasv_fd == -1) {
+        if (global.loglevel >= LOGLEVEL_ERROR)
+            fprintf(stderr, "E: socket(client#%d.pasv-server): %s\n", client->fd, strerror(errno));
+    } else {
+        struct sockaddr_storage addr = client->local_addr;
+        socklen_t addrlen;
+        if (addr.ss_family == AF_INET) {
+            struct sockaddr_in *addr4 = (struct sockaddr_in *) &addr;
+            addr4->sin_port = 0;
+            addrlen = sizeof(struct sockaddr_in);
+        } else {
+            int yes = 1;
+            if (setsockopt(client->pasv_fd, IPPROTO_IPV6, IPV6_V6ONLY, &yes, sizeof(yes)) == -1 &&
+                    global.loglevel >= LOGLEVEL_ERROR)
+                fprintf(stderr, "W: setsockopt(client#%d.pasv-server#%d.ipv6only): %s\n",
+                        client->fd, client->pasv_fd, strerror(errno));
+            struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *) &addr;
+            addr6->sin6_port = 0;
+            addr6->sin6_scope_id = 0;
+            addrlen = sizeof(struct sockaddr_in6);
+        }
+        if (bind(client->pasv_fd, (struct sockaddr *) &addr, addrlen) == -1) {
+            if (global.loglevel >= LOGLEVEL_ERROR)
+                fprintf(stderr, "E: bind(client#%d.pasv-server#%d): %s\n", client->fd, client->pasv_fd, strerror(errno));
+            close(client->pasv_fd);
+            client->pasv_fd = -1;
+        } else if (getsockname(client->pasv_fd, (struct sockaddr *) &addr, &addrlen) == -1) {
+            if (global.loglevel >= LOGLEVEL_ERROR)
+                fprintf(stderr, "E: getsockname(client#%d.pasv-server#%d): %s\n", client->fd, client->pasv_fd, strerror(errno));
+            close(client->pasv_fd);
+            client->pasv_fd = -1;
+        } else if (listen(client->pasv_fd, SOMAXCONN) == -1) {
+            if (global.loglevel >= LOGLEVEL_ERROR)
+                fprintf(stderr, "E: listen(client#%d.pasv-server#%d): %s\n", client->fd, client->pasv_fd, strerror(errno));
+            close(client->pasv_fd);
+            client->pasv_fd = -1;
+        } else {
+            struct epoll_event event;
+            event.events = EPOLLIN | EPOLLET;
+            event.data.ptr = &client->pasv_event_data;
+            if (epoll_ctl(global.epfd, EPOLL_CTL_ADD, client->pasv_fd, &event) == -1) {
+                if (global.loglevel >= LOGLEVEL_ERROR)
+                    fprintf(stderr, "E: epoll_ctl(add: client#%d.pasv-server#%d): %s\n", client->fd, client->pasv_fd, strerror(errno));
+                close(client->pasv_fd);
+                client->pasv_fd = -1;
+            } else {
+                client->pasv_event_data.callback = ftp_client_pasv_callback;
+                client->pasv_event_data.arg = client;
+
+                global_add_fd(client->pasv_fd, FD_FTP_PASV_SERVER, client);
+                uint16_t port;
+                if (addr.ss_family == AF_INET)
+                    port = ntohs(((struct sockaddr_in *)&addr)->sin_port);
+                else
+                    port = ntohs(((struct sockaddr_in6 *)&addr)->sin6_port);
+                ftp_client_write(client, "229 Entering Extended Passive Mode (|||%u|)\r\n", port);
                 ret = 0;
             }
         }
@@ -625,6 +715,58 @@ static int ftp_client_handle_port(ftp_client_t *client, char *arg)
     client->port_addrlen = sizeof(struct sockaddr_in);
     ftp_client_write(client, "200 PORT command successful. Consider using PASV.\r\n");
     return 0;
+}
+
+static int ftp_client_handle_eprt(ftp_client_t *client, char *arg)
+{
+    char delimiter = *arg++;
+    if (!delimiter)
+        goto parse_error;
+    char *net_prt = arg, *net_addr, *tcp_prt;
+    while (*arg && *arg != delimiter)
+        ++arg;
+    if (!*arg)
+        goto parse_error;
+    *arg++ = '\0';
+    net_addr = arg;
+    while (*arg && *arg != delimiter)
+        ++arg;
+    if (!*arg)
+        goto parse_error;
+    *arg++ = '\0';
+    tcp_prt = arg;
+    while (*arg && *arg != delimiter)
+        ++arg;
+    if (!*arg)
+        goto parse_error;
+    *arg = '\0';
+    int protocol = atoi(net_prt);
+    if (protocol == 1) {
+        struct sockaddr_in *addr = (struct sockaddr_in *) &client->port_addr;
+        addr->sin_family = AF_INET;
+        if (inet_pton(AF_INET, net_addr, &addr->sin_addr) != 1)
+            goto parse_error;
+        addr->sin_port = htons((uint16_t) atoi(tcp_prt));
+        if (addr->sin_port == 0)
+            goto parse_error;
+        client->port_addrlen = sizeof(*addr);
+    } else if (protocol == 2) {
+        struct sockaddr_in6 *addr = (struct sockaddr_in6 *) &client->port_addr;
+        addr->sin6_family = AF_INET6;
+        if (inet_pton(AF_INET6, net_addr, &addr->sin6_addr) != 1)
+            goto parse_error;
+        addr->sin6_port = htons((uint16_t) atoi(tcp_prt));
+        if (addr->sin6_port == 0)
+            goto parse_error;
+        addr->sin6_scope_id = 0;
+        client->port_addrlen = sizeof(*addr);
+    } else
+        goto parse_error;
+    ftp_client_write(client, "200 EPRT command successful. Consider using EPSV.\r\n");
+    return 0;
+parse_error:
+    ftp_client_write(client, "500 Bad EPRT command.\r\n");
+    return -1;
 }
 
 static int ftp_client_handle_cwd(ftp_client_t *client, char *arg)
@@ -684,6 +826,35 @@ static int ftp_client_handle_rmd(ftp_client_t *client, char *arg)
     return 0;
 }
 
+static int ftp_client_handle_size(ftp_client_t *client, char *arg)
+{
+    char path[PATH_MAX];
+    struct stat s;
+    if (path_resolve(path, client->wd, arg, client->root) == -1 ||
+            strncmp(path, client->root, client->root_len) != 0 ||
+            (path[client->root_len] && path[client->root_len] != '/') ||
+            stat(path, &s) == -1 || !S_ISREG(s.st_mode)) {
+        ftp_client_write(client, "550 Could not get file size.\r\n");
+        return -1;
+    }
+    ftp_client_write(client, "213 %ld\r\n", s.st_size);
+    return 0;
+}
+
+static int ftp_client_handle_dele(ftp_client_t *client, char *arg)
+{
+    char path[PATH_MAX];
+    if (path_resolve(path, client->wd, arg, client->root) == -1 ||
+            strncmp(path, client->root, client->root_len) != 0 ||
+            (path[client->root_len] && path[client->root_len] != '/') ||
+            unlink(path) == -1) {
+        ftp_client_write(client, "550 Delete operation failed.\r\n");
+        return -1;
+    }
+    ftp_client_write(client, "250 Delete operation successful.\r\n");
+    return 0;
+}
+
 ftp_client_command_t *ftp_client_lookup_command(ftp_client_command_t *commands, size_t len, const char *input)
 {
     size_t begin = 0, middle;
@@ -710,12 +881,12 @@ ftp_client_command_t before_login[] = {
         {"QUIT", 4, ftp_client_handle_quit},
         {"USER", 4, ftp_client_handle_user}
 }, after_login[] = {
+        {"APPE", 4, ftp_client_handle_appe},
         {"CWD",  3, ftp_client_handle_cwd},
-        {"EPSV", 4, NULL},
-        {"EPRT", 4, NULL},
+        {"DELE", 4, ftp_client_handle_dele},
+        {"EPRT", 4, ftp_client_handle_eprt},
+        {"EPSV", 4, ftp_client_handle_epsv},
         {"LIST", 4, ftp_client_handle_list},
-        {"LPSV", 4, NULL},
-        {"LPRT", 4, NULL},
         {"MKD",  3, ftp_client_handle_mkd},
         {"PASS", 4, ftp_client_handle_pass},
         {"PASV", 4, ftp_client_handle_pasv},
@@ -724,6 +895,7 @@ ftp_client_command_t before_login[] = {
         {"QUIT", 4, ftp_client_handle_quit},
         {"RETR", 4, ftp_client_handle_retr},
         {"RMD",  3, ftp_client_handle_rmd},
+        {"SIZE", 4, ftp_client_handle_size},
         {"STOR", 4, ftp_client_handle_stor},
         {"SYST", 4, ftp_client_handle_syst},
         {"TYPE", 4, ftp_client_handle_type},
@@ -861,7 +1033,7 @@ void ftp_client_init()
     global.clients.prev = global.clients.next = &global.clients;
 }
 
-int ftp_client_add(int fd, struct sockaddr *addr, socklen_t len)
+int ftp_client_add(int fd, struct sockaddr_storage *addr, socklen_t len)
 {
     ftp_client_t *client = malloc(sizeof(ftp_client_t));
     if (client == NULL) {
@@ -872,14 +1044,14 @@ int ftp_client_add(int fd, struct sockaddr *addr, socklen_t len)
     }
     memset(client, 0, sizeof(ftp_client_t));
     client->local_addrlen = sizeof(client->local_addr);
-    if (getsockname(fd, &client->local_addr, &client->local_addrlen) == -1) {
+    if (getsockname(fd, (struct sockaddr *) &client->local_addr, &client->local_addrlen) == -1) {
         if (global.loglevel >= LOGLEVEL_ERROR)
             fprintf(stderr, "E: getsockname(client#%d): %s\n", fd, strerror(errno));
         close(fd);
         free(client);
         return -1;
     }
-    if (get_addrin_info(&client->local_addr, client->local_host,
+    if (get_addrin_info((const struct sockaddr *) &client->local_addr, client->local_host,
                         sizeof(client->local_host), &client->local_port) == -1) {
         if (global.loglevel >= LOGLEVEL_ERROR)
             fprintf(stderr, "E: inet_ntop(client#%d.local): %s\n", fd, strerror(errno));
@@ -887,7 +1059,7 @@ int ftp_client_add(int fd, struct sockaddr *addr, socklen_t len)
         free(client);
         return -1;
     }
-    if (get_addrin_info(addr, client->peer_host,
+    if (get_addrin_info((const struct sockaddr *) addr, client->peer_host,
                         sizeof(client->peer_host), &client->peer_port) == -1) {
         if (global.loglevel >= LOGLEVEL_ERROR)
             fprintf(stderr, "E: inet_ntop(client#%d.peer): %s\n", fd, strerror(errno));

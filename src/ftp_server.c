@@ -12,12 +12,12 @@ static int ftp_server_callback(uint32_t events, void *arg)
 {
     ftp_server_t *session = arg;
     if (events & EPOLLIN) {
-        struct sockaddr addr;
+        struct sockaddr_storage addr;
         socklen_t len;
         int fd;
         while (session->fd != -1) {
             len = sizeof(addr);
-            fd = accept4(session->fd, &addr, &len, SOCK_NONBLOCK);
+            fd = accept4(session->fd, (struct sockaddr *) &addr, &len, SOCK_NONBLOCK);
             if (fd == -1) {
                 if (errno != EAGAIN && errno != EWOULDBLOCK && global.loglevel >= LOGLEVEL_ERROR)
                     fprintf(stderr, "E: accept(server#%d): %s\n", session->fd, strerror(errno));
@@ -106,7 +106,7 @@ int ftp_server_create(const char *host, const char *port, int family)
                            server->fd, server->host, server->port);
                 server->event_data.callback = ftp_server_callback;
                 server->event_data.arg = server;
-                server->addr = *temp->ai_addr;
+                memcpy(&server->addr, temp->ai_addr, temp->ai_addrlen);
                 server->addrlen = temp->ai_addrlen;
 
                 server->prev = global.servers.prev;
